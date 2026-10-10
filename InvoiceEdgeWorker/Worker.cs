@@ -1,10 +1,9 @@
 using InvoiceEdgeWorker.Entities;
 using InvoiceEdgeWorker.Enums;
+using InvoiceEdgeWorker.Configuration;
 using InvoiceEdgeWorker.Helpers;
 using InvoiceEdgeWorker.Repositories;
-using OllamaSharp;
-using OllamaSharp.Models.Chat;
-using System.Text.Json;
+using InvoiceEdgeWorker.Services;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Rendering.Skia;
 
@@ -14,23 +13,29 @@ public class Worker : BackgroundService
 {
     private readonly ILogger<Worker> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly OllamaApiClient _ollamaClient;
+    private readonly IInvoiceExtractor _invoiceExtractor;
+    private readonly InvoiceResponseParser _responseParser;
 
-    private readonly string _inboundPath = @"C:\InvoiceDropZone\Inbound";
-    private readonly string _processingPath = @"C:\InvoiceDropZone\Processing";
-    private readonly string _processedPath = @"C:\InvoiceDropZone\Processed";
-    private readonly string _failedPath = @"C:\InvoiceDropZone\Failed";
+    private readonly string _inboundPath;
+    private readonly string _processingPath;
+    private readonly string _processedPath;
+    private readonly string _failedPath;
 
-    public Worker(ILogger<Worker> logger, IServiceScopeFactory scopeFactory)
+    public Worker(
+        ILogger<Worker> logger,
+        IServiceScopeFactory scopeFactory,
+        IInvoiceExtractor invoiceExtractor,
+        InvoiceProcessingOptions options,
+        InvoiceResponseParser responseParser)
     {
         _logger = logger;
         _scopeFactory = scopeFactory;
-
-        // Connect to local Ollama instance running Qwen2.5-VL
-        _ollamaClient = new OllamaApiClient(new Uri("http://localhost:11434"))
-        {
-            SelectedModel = "qwen2.5vl:7b"
-        };
+        _invoiceExtractor = invoiceExtractor;
+        _responseParser = responseParser;
+        _inboundPath = options.InboundPath;
+        _processingPath = options.ProcessingPath;
+        _processedPath = options.ProcessedPath;
+        _failedPath = options.FailedPath;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -148,27 +153,8 @@ public class Worker : BackgroundService
                 _logger.LogInformation("🖼️ Native image detected. Reading bytes directly...");
                 fileBytes = await File.ReadAllBytesAsync(targetProcessingPath, cancellationToken);
             }
-            string base64Image = Convert.ToBase64String(fileBytes);
-
-            var chatRequest = new ChatRequest
-            {
-                Messages = new List<Message>
-                {
-                    new Message
-                    {
-                        Role = ChatRole.User,
-                        Content = "Extract data from this invoice. Respond ONLY with a valid, clean JSON object containing: 'vendorName' (string), 'totalAmount' (number), and 'invoiceDate' (string format YYYY-MM-DD). Do not wrap inside markdown blocks.",
-                        Images = new string[] { base64Image }
-                    }
-                }
-            };
-
             // Stream response out of your local GPU memory
-            string rawResponse = "";
-            await foreach (var responseStream in _ollamaClient.ChatAsync(chatRequest, cancellationToken))
-            {
-                rawResponse += responseStream.Message.Content;
-            }
+            string rawResponse = await _invoiceExtractor.ExtractAsync(fileBytes, cancellationToken);
 
             _logger.LogDebug("Raw AI extraction output: {rawResponse}", rawResponse);
 
@@ -178,36 +164,7 @@ public class Worker : BackgroundService
 
             try
             {
-                using var jsonDoc = JsonDocument.Parse(rawResponse);
-                var root = jsonDoc.RootElement;
-
-                if (root.TryGetProperty("vendorName", out var vendorProp) && vendorProp.ValueKind == JsonValueKind.String)
-                {
-                    invoiceEntity.VendorName = vendorProp.GetString();
-                }
-
-                if (root.TryGetProperty("totalAmount", out var amountProp) && (amountProp.ValueKind == JsonValueKind.Number || amountProp.ValueKind == JsonValueKind.String))
-                {
-                    if (amountProp.ValueKind == JsonValueKind.Number && amountProp.TryGetDecimal(out var dec))
-                    {
-                        invoiceEntity.TotalAmount = dec;
-                    }
-                    else if (amountProp.ValueKind == JsonValueKind.String && Decimal.TryParse(amountProp.GetString(), out var decFromString))
-                    {
-                        invoiceEntity.TotalAmount = decFromString;
-                    }
-                }
-
-                if (root.TryGetProperty("invoiceDate", out var dateProp) && dateProp.ValueKind == JsonValueKind.String)
-                {
-                    var dateStr = dateProp.GetString();
-                    if (DateTime.TryParse(dateStr, out DateTime parsedDate))
-                    {
-                        invoiceEntity.InvoiceDate = DateTime.SpecifyKind(parsedDate, DateTimeKind.Utc);
-                    }
-                }
-
-                invoiceEntity.Status = ProcessingStatus.ProcessedLocally;
+                _responseParser.Apply(rawResponse, invoiceEntity);
 
                 // Route file to completed workspace (preserve original file name when possible)
                 var processedTarget = Path.Combine(_processedPath, Path.GetFileName(targetProcessingPath));
