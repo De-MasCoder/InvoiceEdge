@@ -1,0 +1,92 @@
+# Visual Studio / .NET ignore template
+
+# User-specific files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build results
+[Bb]in/
+[Oo]bj/
+**/bin/
+**/obj/
+Debug/
+Release/
+out/
+artifacts/
+publish/
+
+# NuGet
+*.nupkg
+packages/
+.nuget/
+
+# Restore & lock files
+project.lock.json
+project.fragment.lock.json
+
+# Rider
+.idea/
+*.sln.iml
+
+# VS Code
+.vscode/
+
+# ReSharper
+_ReSharper*/
+*.DotSettings.user
+
+# Resharper, JetBrains Rider caches
+.Rider*/
+
+# StyleCop
+StyleCopReport.xml
+
+# Test results
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# Logs
+*.log
+
+# Dotnet publish
+publish/
+
+# IIS Express
+IISExpress/
+
+# Certificates
+*.pfx
+*.p12
+*.key
+*.cer
+
+# Local app settings and secrets
+appsettings.Development.json
+appsettings.*.Local.json
+secrets.json
+.env
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Dumps
+*.dmp
+
+# Docker
+docker-compose.override.yml
+
+# Node
+node_modules/
+
+# Misc
+*.vspscc
+*.vssscc
+_PublishedWebsites/
