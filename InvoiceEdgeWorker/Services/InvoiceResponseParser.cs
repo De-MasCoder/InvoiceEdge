@@ -8,13 +8,76 @@ public sealed class InvoiceResponseParser
 {
     public void Apply(string rawJson, Invoice invoice)
     {
-        using var document = JsonDocument.Parse(rawJson);
+        using var document = JsonDocument.Parse(NormalizeJson(rawJson));
         var root = document.RootElement;
 
-        invoice.VendorName = GetRequiredString(root, "vendorName");
-        invoice.TotalAmount = GetRequiredDecimal(root, "totalAmount");
-        invoice.InvoiceDate = GetRequiredDate(root, "invoiceDate");
+        var vendorName = GetRequiredString(root, "vendorName");
+        var totalAmount = GetRequiredDecimal(root, "totalAmount");
+        var invoiceDate = GetRequiredDate(root, "invoiceDate");
+        var lineItems = GetLineItems(root, invoice.Id);
+
+        invoice.VendorName = vendorName;
+        invoice.TotalAmount = totalAmount;
+        invoice.InvoiceDate = invoiceDate;
+        invoice.LineItems.Clear();
+        foreach (var lineItem in lineItems)
+        {
+            invoice.LineItems.Add(lineItem);
+        }
+
         invoice.Status = Enums.ProcessingStatus.ProcessedLocally;
+    }
+
+    private static string NormalizeJson(string rawJson)
+    {
+        var normalized = rawJson.Trim();
+
+        if (!normalized.StartsWith("```", StringComparison.Ordinal))
+        {
+            return normalized;
+        }
+
+        var openingLineEnd = normalized.IndexOf('\n');
+        var closingFenceStart = normalized.LastIndexOf("```", StringComparison.Ordinal);
+        if (openingLineEnd < 0 || closingFenceStart <= openingLineEnd)
+        {
+            throw new JsonException("The AI response contained an incomplete Markdown code fence.");
+        }
+
+        return normalized[(openingLineEnd + 1)..closingFenceStart].Trim();
+    }
+
+    private static List<InvoiceLineItem> GetLineItems(JsonElement root, Guid invoiceId)
+    {
+        if (!root.TryGetProperty("lineItems", out var lineItemsProperty))
+        {
+            return new List<InvoiceLineItem>();
+        }
+
+        if (lineItemsProperty.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException("Property 'lineItems' must be an array.");
+        }
+
+        var lineItems = new List<InvoiceLineItem>();
+        foreach (var item in lineItemsProperty.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                throw new JsonException("Each line item must be an object.");
+            }
+
+            lineItems.Add(new InvoiceLineItem
+            {
+                InvoiceId = invoiceId,
+                Description = GetRequiredString(item, "description"),
+                Quantity = GetRequiredDecimal(item, "quantity"),
+                UnitPrice = GetRequiredDecimal(item, "unitPrice"),
+                LineTotal = GetRequiredDecimal(item, "lineTotal")
+            });
+        }
+
+        return lineItems;
     }
 
     private static string GetRequiredString(JsonElement root, string propertyName)

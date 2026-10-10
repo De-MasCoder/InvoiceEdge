@@ -22,7 +22,14 @@ namespace InvoiceEdgeWorker.Repositories
         public async Task AddAsync(Invoice invoice, CancellationToken cancellationToken = default) =>
             await _context.Invoices.AddAsync(invoice, cancellationToken);
 
-        public void Update(Invoice invoice) =>
-            _context.Invoices.Update(invoice);
+        public void Update(Invoice invoice)
+        {
+            _context.Entry(invoice).State = EntityState.Modified;
+
+            foreach (var lineItem in invoice.LineItems)
+            {
+                _context.Entry(lineItem).State = EntityState.Added;
+            }
+        }
     }
 }

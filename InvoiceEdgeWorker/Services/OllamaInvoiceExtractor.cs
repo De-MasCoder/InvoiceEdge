@@ -5,7 +5,7 @@ namespace InvoiceEdgeWorker.Services;
 
 public sealed class OllamaInvoiceExtractor : IInvoiceExtractor
 {
-    private const string ExtractionPrompt = "Extract data from this invoice. Respond ONLY with a valid, clean JSON object containing: 'vendorName' (string), 'totalAmount' (number), and 'invoiceDate' (string format YYYY-MM-DD). Do not wrap inside markdown blocks.";
+    private const string ExtractionPrompt = "Extract data from this invoice. Respond ONLY with a valid, clean JSON object containing: 'vendorName' (string), 'totalAmount' (number), 'invoiceDate' (string format YYYY-MM-DD), and 'lineItems' (array). Each lineItems element must contain 'description' (string), 'quantity' (number), 'unitPrice' (number), and 'lineTotal' (number). Use an empty array when there are no line items. Do not wrap inside markdown blocks.";
     private readonly OllamaApiClient _client;
 
     public OllamaInvoiceExtractor(Uri endpoint, string model)

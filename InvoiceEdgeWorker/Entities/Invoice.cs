@@ -15,6 +15,7 @@ namespace InvoiceEdgeWorker.Entities
         public string? VendorName { get; set; }
         public decimal? TotalAmount { get; set; }
         public DateTime? InvoiceDate { get; set; }
+        public ICollection<InvoiceLineItem> LineItems { get; set; } = new List<InvoiceLineItem>();
 
         // Audit & System Metadata
         public string RawJson { get; set; } = string.Empty;

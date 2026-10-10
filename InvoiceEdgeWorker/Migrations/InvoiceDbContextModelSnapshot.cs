@@ -71,6 +71,55 @@ namespace InvoiceEdgeWorker.Migrations
 
                     b.ToTable("Invoices");
                 });
+
+            modelBuilder.Entity("InvoiceEdgeWorker.Entities.InvoiceLineItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<Guid>("InvoiceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("LineTotal")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("Quantity")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("numeric(18,4)");
+
+                    b.Property<decimal>("UnitPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InvoiceId");
+
+                    b.ToTable("InvoiceLineItem");
+                });
+
+            modelBuilder.Entity("InvoiceEdgeWorker.Entities.InvoiceLineItem", b =>
+                {
+                    b.HasOne("InvoiceEdgeWorker.Entities.Invoice", "Invoice")
+                        .WithMany("LineItems")
+                        .HasForeignKey("InvoiceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Invoice");
+                });
+
+            modelBuilder.Entity("InvoiceEdgeWorker.Entities.Invoice", b =>
+                {
+                    b.Navigation("LineItems");
+                });
 #pragma warning restore 612, 618
         }
     }
