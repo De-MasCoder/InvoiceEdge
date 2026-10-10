@@ -1,13 +1,9 @@
 using InvoiceEdgeWorker.Entities;
 using InvoiceEdgeWorker.Enums;
+using InvoiceEdgeWorker.Helpers;
 using InvoiceEdgeWorker.Repositories;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using OllamaSharp;
-using OllamaSharp.Models;
 using OllamaSharp.Models.Chat;
-using System.IO;
 using System.Text.Json;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Rendering.Skia;
@@ -54,17 +50,38 @@ public class Worker : BackgroundService
             EnableRaisingEvents = true
         };
 
-        // Fire and forget handler to keep the core directory stream unblocked
-        watcher.Created += (sender, e) =>
-        {
-            _ = Task.Run(() => ProcessFileAsync(e.FullPath, stoppingToken), stoppingToken);
-        };
+        // Register a resilient, fire-and-forget handler that logs failures
+        RegisterWatcher(watcher, stoppingToken);
 
         // Keep the application token alive infinitely
         while (!stoppingToken.IsCancellationRequested)
         {
             await Task.Delay(1000, stoppingToken);
         }
+
+    }
+
+    private void RegisterWatcher(FileSystemWatcher watcher, CancellationToken token)
+    {
+        watcher.Created += (sender, e) =>
+        {
+            // Run the processing on the thread-pool and capture/log any exceptions
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await ProcessFileAsync(e.FullPath, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    // Expected during shutdown - ignore
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Unhandled exception while processing file '{fileName}'", e.Name);
+                }
+            }, token);
+        };
     }
 
     private async Task ProcessFileAsync(string filePath, CancellationToken cancellationToken)
@@ -81,12 +98,27 @@ public class Worker : BackgroundService
             _logger.LogInformation("📂 New document detected: {fileName}. Ingesting...", fileName);
 
             // Allow disk IO stream to finish flushing file safely
-            await Task.Delay(1500, cancellationToken);
+            await Task.Delay(1500, cancellationToken).ConfigureAwait(false);
 
             if (!File.Exists(filePath)) return;
 
+            // Ensure we do not clobber an existing file in the processing folder
+            if (File.Exists(targetProcessingPath))
+            {
+                var uniqueName = $"{Path.GetFileNameWithoutExtension(fileName)}_{Guid.NewGuid()}{Path.GetExtension(fileName)}";
+                targetProcessingPath = Path.Combine(_processingPath, uniqueName);
+            }
+
             // Move the file out of Inbound immediately to avoid double-processing collisions
-            File.Move(filePath, targetProcessingPath);
+            try
+            {
+                File.Move(filePath, targetProcessingPath);
+            }
+            catch (Exception moveEx)
+            {
+                _logger.LogWarning(moveEx, "Could not move incoming file '{fileName}' to processing folder. Skipping.", fileName);
+                return;
+            }
 
             // 3. Persist the initial discovery state to PostgreSQL
             var invoiceEntity = new Invoice
@@ -108,7 +140,7 @@ public class Worker : BackgroundService
             {
                 // Call your new private function here to turn the PDF page into a PNG in memory
                 _logger.LogInformation("📄 PDF detected. Rasterizing page 1 to image bytes...");
-                fileBytes = ConvertPdfPageToImageBytes(targetProcessingPath);
+                fileBytes = PdfImageHelper.ConvertFirstPageToImageBytes(targetProcessingPath);
             }
             else
             {
@@ -149,27 +181,54 @@ public class Worker : BackgroundService
                 using var jsonDoc = JsonDocument.Parse(rawResponse);
                 var root = jsonDoc.RootElement;
 
-                invoiceEntity.VendorName = root.GetProperty("vendorName").GetString();
-                invoiceEntity.TotalAmount = root.GetProperty("totalAmount").GetDecimal();
-
-                if (DateTime.TryParse(root.GetProperty("invoiceDate").GetString(), out DateTime parsedDate))
+                if (root.TryGetProperty("vendorName", out var vendorProp) && vendorProp.ValueKind == JsonValueKind.String)
                 {
-                    invoiceEntity.InvoiceDate = DateTime.SpecifyKind(parsedDate, DateTimeKind.Utc);
+                    invoiceEntity.VendorName = vendorProp.GetString();
+                }
+
+                if (root.TryGetProperty("totalAmount", out var amountProp) && (amountProp.ValueKind == JsonValueKind.Number || amountProp.ValueKind == JsonValueKind.String))
+                {
+                    if (amountProp.ValueKind == JsonValueKind.Number && amountProp.TryGetDecimal(out var dec))
+                    {
+                        invoiceEntity.TotalAmount = dec;
+                    }
+                    else if (amountProp.ValueKind == JsonValueKind.String && Decimal.TryParse(amountProp.GetString(), out var decFromString))
+                    {
+                        invoiceEntity.TotalAmount = decFromString;
+                    }
+                }
+
+                if (root.TryGetProperty("invoiceDate", out var dateProp) && dateProp.ValueKind == JsonValueKind.String)
+                {
+                    var dateStr = dateProp.GetString();
+                    if (DateTime.TryParse(dateStr, out DateTime parsedDate))
+                    {
+                        invoiceEntity.InvoiceDate = DateTime.SpecifyKind(parsedDate, DateTimeKind.Utc);
+                    }
                 }
 
                 invoiceEntity.Status = ProcessingStatus.ProcessedLocally;
 
-                // Route file to completed workspace
-                File.Move(targetProcessingPath, Path.Combine(_processedPath, fileName));
+                // Route file to completed workspace (preserve original file name when possible)
+                var processedTarget = Path.Combine(_processedPath, Path.GetFileName(targetProcessingPath));
+                File.Move(targetProcessingPath, processedTarget);
                 _logger.LogInformation("✅ Invoice {fileName} parsed and saved successfully.", fileName);
             }
             catch (Exception jsonEx)
             {
-                _logger.LogWarning("⚠️ AI output parsing failed for {fileName}. Flagging for Review. Details: {msg}", fileName, jsonEx.Message);
+                _logger.LogWarning(jsonEx, "⚠️ AI output parsing failed for {fileName}. Flagging for Review.", fileName);
                 invoiceEntity.Status = ProcessingStatus.RequiresReview;
                 invoiceEntity.ErrorMessage = $"JSON Structural Mismatch: {jsonEx.Message}";
 
-                File.Move(targetProcessingPath, Path.Combine(_processedPath, fileName)); // Keep it in processed since we parsed text, but needs eyes
+                try
+                {
+                    var processedTarget = Path.Combine(_processedPath, Path.GetFileName(targetProcessingPath));
+                    File.Move(targetProcessingPath, processedTarget);
+                }
+                catch (Exception fileMoveEx)
+                {
+                    _logger.LogError(fileMoveEx, "Failed to move '{fileName}' to processed folder after parse error.", fileName);
+                }
             }
 
             // Sync structural changes into local relational tables
@@ -192,29 +251,6 @@ public class Worker : BackgroundService
                 _logger.LogCritical(fileMoveEx, "Could not isolate broken file to failed folder.");
             }
         }
-    }
-
-    private byte[] ConvertPdfPageToImageBytes(string pdfPath)
-    {
-        // 1. Initialize the document with the Skia layout parsing engine options
-        using var document = PdfDocument.Open(pdfPath, SkiaRenderingParsingOptions.Instance);
-        if (document.NumberOfPages == 0)
-        {
-            throw new InvalidOperationException("The provided PDF file contains no readable pages.");
-        }
-
-        // 2. Register the Skia page factories onto the document instance
-        document.AddSkiaPageFactory();
-
-        // 3. Render page 1 directly to an internal PNG MemoryStream at 2.0x scale (300+ DPI)
-        // Pass 10 for compression/quality balancing
-        using MemoryStream pngStream = document.GetPageAsPng(
-            pageNumber: 1,
-            scale: 2.0f
-        );
-
-        // 4. Return the pure byte array right into your base64 encoder
-        return pngStream.ToArray();
     }
 
 }
