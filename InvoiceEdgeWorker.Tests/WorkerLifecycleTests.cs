@@ -26,7 +26,8 @@ public sealed class WorkerLifecycleTests
             new Mock<IServiceScopeFactory>().Object,
             new StubInvoiceExtractor(),
             options,
-            new InvoiceResponseParser());
+            new InvoiceResponseParser(),
+            new Mock<IStorageService>().Object);
 
         try
         {

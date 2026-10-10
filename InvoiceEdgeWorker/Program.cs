@@ -1,3 +1,5 @@
+using Amazon;
+using Amazon.S3;
 using InvoiceEdgeWorker;
 using InvoiceEdgeWorker.Configuration;
 using InvoiceEdgeWorker.Data;
@@ -27,6 +29,14 @@ builder.Services.AddSingleton<IInvoiceExtractor>(_ =>
 builder.Services.AddSingleton<InvoiceResponseParser>();
 
 builder.Services.AddHostedService<Worker>();
+var awsRegion = builder.Configuration["AWS:Region"] ?? "us-east-1";
+builder.Services.AddSingleton<IAmazonS3>(_ =>
+    new AmazonS3Client(new AmazonS3Config
+    {
+        RegionEndpoint = RegionEndpoint.GetBySystemName(awsRegion)
+    }));
+
+builder.Services.AddSingleton<IStorageService, AmazonS3StorageService>();
 
 var host = builder.Build();
 host.Run();

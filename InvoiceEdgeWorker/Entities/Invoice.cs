@@ -10,6 +10,7 @@ namespace InvoiceEdgeWorker.Entities
         public Guid Id { get; set; } = Guid.NewGuid();
         public string FileName { get; set; } = string.Empty;
         public string FilePath { get; set; } = string.Empty;
+        public string? ContentHash { get; set; }
 
         // Extracted Fields (Nullable in case AI extraction completely fails)
         public string? VendorName { get; set; }

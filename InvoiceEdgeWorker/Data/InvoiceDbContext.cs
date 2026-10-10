@@ -20,6 +20,10 @@ public class InvoiceDbContext : DbContext
             entity.Property(e => e.FilePath).IsRequired().HasMaxLength(500);
             entity.Property(e => e.VendorName).HasMaxLength(150);
             entity.Property(e => e.TotalAmount).HasPrecision(18, 2);
+            entity.Property(e => e.ContentHash).HasMaxLength(64);
+            entity.HasIndex(e => e.ContentHash)
+                  .IsUnique()
+                  .HasFilter("\"ContentHash\" IS NOT NULL");
 
             // Map our custom Enum state cleanly as a text column in Postgres
             entity.Property(e => e.Status)

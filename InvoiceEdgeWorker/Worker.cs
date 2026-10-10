@@ -15,6 +15,7 @@ public class Worker : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IInvoiceExtractor _invoiceExtractor;
     private readonly InvoiceResponseParser _responseParser;
+    private readonly IStorageService _storageService;
 
     private readonly string _inboundPath;
     private readonly string _processingPath;
@@ -26,12 +27,14 @@ public class Worker : BackgroundService
         IServiceScopeFactory scopeFactory,
         IInvoiceExtractor invoiceExtractor,
         InvoiceProcessingOptions options,
-        InvoiceResponseParser responseParser)
+        InvoiceResponseParser responseParser,
+        IStorageService storageService)
     {
         _logger = logger;
         _scopeFactory = scopeFactory;
         _invoiceExtractor = invoiceExtractor;
         _responseParser = responseParser;
+        _storageService = storageService;
         _inboundPath = options.InboundPath;
         _processingPath = options.ProcessingPath;
         _processedPath = options.ProcessedPath;
@@ -107,6 +110,19 @@ public class Worker : BackgroundService
 
             if (!File.Exists(filePath)) return;
 
+            var contentHash = await FileHashHelper.ComputeSha256Async(filePath, cancellationToken);
+            var existingInvoice = await unitOfWork.Invoices.GetByContentHashAsync(contentHash, cancellationToken);
+            if (existingInvoice is not null)
+            {
+                _logger.LogInformation(
+                    "Duplicate invoice content detected for '{fileName}'. Existing invoice: {invoiceId}. Skipping processing.",
+                    fileName,
+                    existingInvoice.Id);
+
+                MoveDuplicateToProcessed(filePath, fileName);
+                return;
+            }
+
             // Ensure we do not clobber an existing file in the processing folder
             if (File.Exists(targetProcessingPath))
             {
@@ -130,6 +146,7 @@ public class Worker : BackgroundService
             {
                 FileName = fileName,
                 FilePath = targetProcessingPath,
+                ContentHash = contentHash,
                 Status = ProcessingStatus.Processing
             };
             await unitOfWork.Invoices.AddAsync(invoiceEntity);
@@ -161,15 +178,12 @@ public class Worker : BackgroundService
             // 5. Parse, Validate, and update state entity mapping
             invoiceEntity.RawJson = rawResponse;
             invoiceEntity.UpdatedAt = DateTime.UtcNow;
+            var extractionSucceeded = false;
 
             try
             {
                 _responseParser.Apply(rawResponse, invoiceEntity);
-
-                // Route file to completed workspace (preserve original file name when possible)
-                var processedTarget = Path.Combine(_processedPath, Path.GetFileName(targetProcessingPath));
-                File.Move(targetProcessingPath, processedTarget);
-                _logger.LogInformation("✅ Invoice {fileName} parsed and saved successfully.", fileName);
+                extractionSucceeded = true;
             }
             catch (Exception jsonEx)
             {
@@ -186,6 +200,16 @@ public class Worker : BackgroundService
                 {
                     _logger.LogError(fileMoveEx, "Failed to move '{fileName}' to processed folder after parse error.", fileName);
                 }
+            }
+
+            if (extractionSucceeded)
+            {
+                // Upload while the file is still in Processing, then move it locally after upload succeeds.
+                await _storageService.UploadInvoiceAsync(targetProcessingPath, fileName, cancellationToken);
+
+                var processedTarget = Path.Combine(_processedPath, Path.GetFileName(targetProcessingPath));
+                File.Move(targetProcessingPath, processedTarget);
+                _logger.LogInformation("✅ Invoice {fileName} parsed, uploaded, and saved successfully.", fileName);
             }
 
             // Sync structural changes into local relational tables
@@ -207,6 +231,26 @@ public class Worker : BackgroundService
             {
                 _logger.LogCritical(fileMoveEx, "Could not isolate broken file to failed folder.");
             }
+        }
+    }
+
+    private void MoveDuplicateToProcessed(string filePath, string fileName)
+    {
+        var targetPath = Path.Combine(_processedPath, fileName);
+        if (File.Exists(targetPath))
+        {
+            targetPath = Path.Combine(
+                _processedPath,
+                $"{Path.GetFileNameWithoutExtension(fileName)}_duplicate_{Guid.NewGuid():N}{Path.GetExtension(fileName)}");
+        }
+
+        try
+        {
+            File.Move(filePath, targetPath);
+        }
+        catch (Exception moveEx)
+        {
+            _logger.LogError(moveEx, "Could not move duplicate file '{fileName}' to the processed folder.", fileName);
         }
     }
 

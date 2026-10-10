@@ -19,6 +19,9 @@ namespace InvoiceEdgeWorker.Repositories
         public async Task<Invoice?> GetByFileNameAsync(string fileName, CancellationToken cancellationToken = default) =>
             await _context.Invoices.FirstOrDefaultAsync(i => i.FileName == fileName, cancellationToken);
 
+        public async Task<Invoice?> GetByContentHashAsync(string contentHash, CancellationToken cancellationToken = default) =>
+            await _context.Invoices.FirstOrDefaultAsync(i => i.ContentHash == contentHash, cancellationToken);
+
         public async Task AddAsync(Invoice invoice, CancellationToken cancellationToken = default) =>
             await _context.Invoices.AddAsync(invoice, cancellationToken);
 

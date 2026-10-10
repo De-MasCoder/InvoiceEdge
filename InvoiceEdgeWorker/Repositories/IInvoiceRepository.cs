@@ -16,6 +16,7 @@ public interface IInvoiceRepository
     /// <param name="fileName"></param>
     /// <returns></returns>
     Task<Invoice?> GetByFileNameAsync(string fileName, CancellationToken cancellationToken = default);
+    Task<Invoice?> GetByContentHashAsync(string contentHash, CancellationToken cancellationToken = default);
     /// <summary>
     /// Gets all invoices.
     /// </summary>

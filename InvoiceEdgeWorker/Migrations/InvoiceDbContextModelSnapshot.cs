@@ -28,6 +28,10 @@ namespace InvoiceEdgeWorker.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("ContentHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -68,6 +72,10 @@ namespace InvoiceEdgeWorker.Migrations
                         .HasColumnType("character varying(150)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ContentHash")
+                        .IsUnique()
+                        .HasFilter("\"ContentHash\" IS NOT NULL");
 
                     b.ToTable("Invoices");
                 });
