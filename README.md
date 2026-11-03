@@ -323,4 +323,4 @@ Inspect the worker log for the original exception. Common causes include invalid
 
 ## License
 
-Add the project license and copyright information here when they are established for the repository.
+MIT
